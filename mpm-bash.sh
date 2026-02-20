@@ -2,17 +2,17 @@
 # Script that interacts with MPM (MATLAB Package Manager) to install MathWorks products.
 # Each product specified should be separated with a space. Spaces in a name are separated with an underscore.
 
+LATEST_RELEASE="R2025b"
+
 # This script doesn't support anything other than Linux. Use MPM.Go if you want to use this on macOS or Windows.
-if [[ "$OSTYPE" == "linux-gnu"* ]]; then
-  echo ""
-else
-  echo "$(tput setaf 1)Non-Linux platforms are unsupported. Exiting.$(tput sgr0)"
+if [[ "$OSTYPE" != "linux-gnu"* ]]; then
+  echo -e "\e[31mNon-Linux platforms are unsupported. Exiting.\e[0m"
   exit 1
 fi
 
 # Print the version number, if requested, and then close the script.
 if [[ "$1" == "-version" ]]; then
-  echo "Version 5.2"
+  echo "Version 6.0"
   exit 0
 fi
 
@@ -42,7 +42,7 @@ while [[ ! -d "$downloadDirectory" ]]; do
     if mkdir -p "$downloadDirectory"; then
       echo "Directory '$downloadDirectory' created."
     else
-      echo -e "\033[31mFailed to create directory '$downloadDirectory'. See the error message above.\033[0m"
+      echo -e "\e[31mFailed to create directory '$downloadDirectory'. See the error message above.\e[0m"
       prompt_download_directory
     fi
   else
@@ -50,10 +50,13 @@ while [[ ! -d "$downloadDirectory" ]]; do
   fi
 done
 
-cd "$downloadDirectory"
+cd "$downloadDirectory" || { echo -e "\e[31mFailed to access directory '$downloadDirectory'. Exiting.\e[0m"; exit 1; }
 
 download_mpm() {
-  wget https://www.mathworks.com/mpm/glnxa64/mpm
+  if ! wget https://www.mathworks.com/mpm/glnxa64/mpm; then
+    echo -e "\e[31mFailed to download MPM. Exiting.\e[0m"
+    exit 1
+  fi
 }
 
 # Check if mpm already exists in this directory.
@@ -63,7 +66,7 @@ if [ -f "mpm" ]; then
     mpmExistsPrompt="MPM is already downloaded in this directory. Type 'y' to overwrite it with a newer copy or type 'n' to \
       use your existing copy (not recommended)."
 
-    echo $mpmExistsPrompt
+    echo "$mpmExistsPrompt"
     read -e -p "> " choice
     history -s "$choice"
 
@@ -91,19 +94,20 @@ else
   download_mpm
 fi
 
-# If chmod fails, then ask about where you want to download MPM again.
+# If chmod fails, something went wrong.
 chmod_output=$(chmod +x mpm 2>&1)
 
-echo $chmod_output
+echo "$chmod_output"
 
 # Any output from chmod is considered bad.
 if [ -n "$chmod_output" ]; then
-  prompt_download_directory
+  echo -e "\e[31mFailed to make MPM executable. Exiting.\e[0m"
+  exit 1
 fi
 
 # Pick your release number.
 prompt_release_number() {
-  echo "Which release would you like to install? (ex: R2025b). Press Enter to use the latest release."
+  echo "Which release would you like to install? (ex: $LATEST_RELEASE). Press Enter to use the latest release."
   read -e -p "> " releaseNumber
   history -s "$releaseNumber"
 }
@@ -115,26 +119,10 @@ while [[ $validRelease == false ]]; do
   prompt_release_number
 
   if [[ -z "$releaseNumber" ]]; then
-    releaseNumber="R2025b"
+    releaseNumber="$LATEST_RELEASE"
     validRelease=true
-  elif [[ $releaseNumber != "R2017b" &&
-    $releaseNumber != "R2018a" &&
-    $releaseNumber != "R2018b" &&
-    $releaseNumber != "R2019a" &&
-    $releaseNumber != "R2019b" &&
-    $releaseNumber != "R2020a" &&
-    $releaseNumber != "R2020b" &&
-    $releaseNumber != "R2021a" &&
-    $releaseNumber != "R2021b" &&
-    $releaseNumber != "R2022a" &&
-    $releaseNumber != "R2022b" &&
-    $releaseNumber != "R2023a" &&
-    $releaseNumber != "R2023b" &&
-    $releaseNumber != "R2024a" &&
-    $releaseNumber != "R2024b" &&
-    $releaseNumber != "R2025a" &&
-    $releaseNumber != "R2025b" ]]; then
-    echo -e "\e[31mInvalid release chosen. Please enter a release between R2017b-R2025b.\e[0m"
+  elif [[ ! "$releaseNumber" =~ ^R20(1[7-9]|2[0-5])[ab]$ ]]; then
+    echo -e "\e[31mInvalid release chosen. Please enter a release between R2017b-$LATEST_RELEASE.\e[0m"
   else
     validRelease=true
   fi
@@ -218,9 +206,9 @@ if [[ -z "$productList" ]]; then
       productList+=" ${oldProductsToAdd[$release]}"
     fi
   done
-elif [ "$productList" == "parallel_products" && $releaseNumber != "R2017b" && $releaseNumber != "R2018a" && $releaseNumber != "R2018b"]; then
+elif [[ "$productList" == "parallel_products" && "$releaseNumber" != "R2017b" && "$releaseNumber" != "R2018a" && "$releaseNumber" != "R2018b" ]]; then
   productList="MATLAB MATLAB_Parallel_Server Parallel_Computing_Toolbox"
-elif [ "$productList" == "parallel_products" && $releaseNumber == "R2017b" || $releaseNumber == "R2018a" || $releaseNumber == "R2018b"]; then
+elif [[ "$productList" == "parallel_products" && ("$releaseNumber" == "R2017b" || "$releaseNumber" == "R2018a" || "$releaseNumber" == "R2018b") ]]; then
   productList="MATLAB MATLAB_Distributed_Computing_Server Parallel_Computing_Toolbox"
 fi
 
@@ -238,7 +226,7 @@ prompt_license_file() {
   while true; do
     echo "If you would like to activate now, please provide the path to your license file. Press Enter to add a license file yourself afterwards."
     read -e -p "> " originalLicenseFile
-    history -s "originalLicenseFile"
+    history -s "$originalLicenseFile"
 
     if [ -z "$originalLicenseFile" ]; then
       break # Exit the loop, leaving $originalLicenseFile blank.
@@ -270,8 +258,8 @@ fi
 
 # If you specified a license file, do the thing to put it in place.
 if [[ -n "${originalLicenseFile// /}" ]]; then
-  cd "$installationDirectory" && mkdir -p licenses && cd licenses
-  if [[ $? -eq 0 ]]; then
+  licensesDir="$installationDirectory/licenses"
+  if mkdir -p "$licensesDir"; then
     licenseFileName=$(basename "$originalLicenseFile")
 
     # Change the file extension to .lic if it's .dat. MATLAB doesn't like .dat.
@@ -279,8 +267,7 @@ if [[ -n "${originalLicenseFile// /}" ]]; then
       licenseFileName="${licenseFileName%.*}.lic"
     fi
 
-    cp "$originalLicenseFile" "$licenseFileName"
-    if [[ $? -eq 0 ]]; then
+    if cp "$originalLicenseFile" "$licensesDir/$licenseFileName"; then
       echo "The license file has been successfully copied to the installation!"
     else
       echo "Error: Failed to copy the license file." >&2
