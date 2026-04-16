@@ -2,7 +2,7 @@
 # Script that interacts with MPM (MATLAB Package Manager) to install MathWorks products.
 # Each product specified should be separated with a space. Spaces in a name are separated with an underscore.
 
-LATEST_RELEASE="R2025b"
+LATEST_RELEASE="R2026a"
 
 # This script doesn't support anything other than Linux. Use MPM.Go if you want to use this on macOS or Windows.
 if [[ "$OSTYPE" != "linux-gnu"* ]]; then
@@ -12,7 +12,7 @@ fi
 
 # Print the version number, if requested, and then close the script.
 if [[ "$1" == "-version" ]]; then
-  echo "Version 6.0"
+  echo "Version 6.1"
   exit 0
 fi
 
@@ -121,27 +121,21 @@ while [[ $validRelease == false ]]; do
   if [[ -z "$releaseNumber" ]]; then
     releaseNumber="$LATEST_RELEASE"
     validRelease=true
-  elif [[ ! "$releaseNumber" =~ ^R20(1[7-9]|2[0-5])[ab]$ ]]; then
+  elif [[ ! "$releaseNumber" =~ ^R20(1[7-9]|2[0-5])[ab]$|^R2026a$ ]]; then
     echo -e "\e[31mInvalid release chosen. Please enter a release between R2017b-$LATEST_RELEASE.\e[0m"
   else
     validRelease=true
   fi
 done
 
-prompt_product_list() {
-  echo "Which products would you like to install? Press Enter to install all products."
-  read -e -p "> " productList
-  history -s "$productList"
-}
-
-prompt_product_list
-
-# If you pressed Enter, get everything!
-if [[ -z "$productList" ]]; then
+# Build the complete product list for the selected release.
+build_all_products() {
+  allProducts=""
 
   # Specify the products to add, starting from the bottom, and going up based on the release you picked.
   # Everything is one release off because the selected release has to be 1 less than the release being compared.
   declare -A newProductsToAdd=(
+    ["R2025b"]="Polyspace_as_You_Code Raspberry_Pi_Blockset STM32_Microcontroller_Blockset Simulink_FMU_Builder Wireless_Network_Toolbox"
     ["R2025a"]="" # No new products in R2025b.
     ["R2024b"]="" # No new products in R2025a.
     ["R2024a"]="" # No new products in R2024b.
@@ -183,7 +177,7 @@ if [[ -z "$productList" ]]; then
   # Logic allowing us to start from the bottom of the list and work our way up.
   for release in "${!newProductsToAdd[@]}"; do
     if [[ $releaseNumber > $release ]]; then
-      productList+=" ${newProductsToAdd[$release]}"
+      allProducts+=" ${newProductsToAdd[$release]}"
     fi
   done
 
@@ -203,14 +197,109 @@ if [[ -z "$productList" ]]; then
   # Logic allowing us to start from the top of the list and work our way down. This allows discontinued/renamed products to be installed.
   for release in "${!oldProductsToAdd[@]}"; do
     if [[ $releaseNumber < $release ]]; then
-      productList+=" ${oldProductsToAdd[$release]}"
+      allProducts+=" ${oldProductsToAdd[$release]}"
     fi
   done
-elif [[ "$productList" == "parallel_products" && "$releaseNumber" != "R2017b" && "$releaseNumber" != "R2018a" && "$releaseNumber" != "R2018b" ]]; then
-  productList="MATLAB MATLAB_Parallel_Server Parallel_Computing_Toolbox"
-elif [[ "$productList" == "parallel_products" && ("$releaseNumber" == "R2017b" || "$releaseNumber" == "R2018a" || "$releaseNumber" == "R2018b") ]]; then
-  productList="MATLAB MATLAB_Distributed_Computing_Server Parallel_Computing_Toolbox"
-fi
+}
+
+# Find the closest matching product name using Levenshtein edit distance (via awk for performance).
+closest_product() {
+  local input="$1"
+  local max_dist=$(( ${#input} / 3 ))
+  ((max_dist < 3)) && max_dist=3
+
+  echo "$allProducts" | tr ' ' '\n' | grep -v '^$' | awk -v input="${input,,}" -v max_dist="$max_dist" '
+  function lev(a, b,    la, lb, i, j, cost, d, ins, sub, m) {
+    la = length(a); lb = length(b)
+    if (la == 0) return lb
+    if (lb == 0) return la
+    for (j = 0; j <= lb; j++) prev[j] = j
+    for (i = 1; i <= la; i++) {
+      curr[0] = i
+      for (j = 1; j <= lb; j++) {
+        cost = (substr(a, i, 1) != substr(b, j, 1)) ? 1 : 0
+        d = prev[j] + 1; ins = curr[j-1] + 1; sub = prev[j-1] + cost
+        m = d; if (ins < m) m = ins; if (sub < m) m = sub
+        curr[j] = m
+      }
+      for (j = 0; j <= lb; j++) prev[j] = curr[j]
+    }
+    return prev[lb]
+  }
+  BEGIN { best_dist = length(input) + 1; best = "" }
+  {
+    dist = lev(input, tolower($0))
+    if (dist < best_dist) { best_dist = dist; best = $0 }
+  }
+  END { if (best_dist <= max_dist) print best }
+  '
+}
+
+build_all_products
+
+prompt_product_list() {
+  echo "Which products would you like to install? Press Enter to install all products."
+  read -e -p "> " productList
+  history -s "$productList"
+}
+
+# Product selection with validation.
+while true; do
+  prompt_product_list
+
+  if [[ -z "$productList" ]]; then
+    productList="$allProducts"
+    break
+  fi
+
+  if [[ "${productList,,}" == "parallel_products" ]]; then
+    if [[ "$releaseNumber" != "R2017b" && "$releaseNumber" != "R2018a" && "$releaseNumber" != "R2018b" ]]; then
+      productList="MATLAB MATLAB_Parallel_Server Parallel_Computing_Toolbox"
+    else
+      productList="MATLAB MATLAB_Distributed_Computing_Server Parallel_Computing_Toolbox"
+    fi
+    break
+  fi
+
+  # Validate each product case-insensitively and suggest corrections for typos.
+  resolved=""
+  has_errors=false
+  error_messages=()
+
+  for input_product in $productList; do
+    input_lower="${input_product,,}"
+    found=false
+
+    for available in $allProducts; do
+      if [[ "${available,,}" == "$input_lower" ]]; then
+        resolved+=" $available"
+        found=true
+        break
+      fi
+    done
+
+    if [[ $found == false ]]; then
+      has_errors=true
+      suggestion=$(closest_product "$input_product")
+      if [[ -n "$suggestion" ]]; then
+        error_messages+=("  \e[31m- $input_product\e[0m  did you mean \e[32m$suggestion\e[0m?")
+      else
+        error_messages+=("  \e[31m- $input_product\e[0m")
+      fi
+    fi
+  done
+
+  if [[ $has_errors == true ]]; then
+    echo -e "\e[31mThe following products were not recognized:\e[0m"
+    for msg in "${error_messages[@]}"; do
+      echo -e "$msg"
+    done
+    echo -e "\e[31mPlease try again. Different products should be separated by spaces. Spaces in a product name should be replaced with underscores.\e[0m"
+  else
+    productList="$resolved"
+    break
+  fi
+done
 
 echo "Where would you like to install these products? Press Enter to install to /usr/local/MATLAB/$releaseNumber."
 read -e -p "> " installationDirectory
